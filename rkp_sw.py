@@ -207,12 +207,13 @@ def resolve_seed(
     *,
     seed_hex: str | None = None,
     hw_key_hex: str | None = None,
+    kdf_label: str | None = None,
 ) -> bytes:
     """Resolve the 32-byte Ed25519 CDI_Leaf seed.
 
     Priority:
       1. ``--seed`` (direct 32-byte hex seed)
-      2. ``--hw-key`` (simulate hardware KDF to derive seed)
+      2. ``--hw-key`` + ``--kdf-label`` (simulate hardware KDF)
       3. Fail with an error asking the user to provide one.
     """
     if seed_hex:
@@ -222,12 +223,19 @@ def resolve_seed(
         return seed
 
     if hw_key_hex:
+        if not kdf_label:
+            print(
+                'Error: --kdf-label is required when using --hw-key.',
+                file=sys.stderr,
+            )
+            sys.exit(1)
         key = bytes.fromhex(hw_key_hex)
-        return HardwareKdf(key).derive(b'rkp_bcc_km', 32)
+        return HardwareKdf(key).derive(kdf_label.encode(), 32)
 
     print(
         'Error: No key material provided.\n'
-        'Supply either --seed <64-hex-chars> or --hw-key <32-hex-chars>.',
+        'Supply either --seed <64-hex-chars> or '
+        '--hw-key <32-hex-chars> --kdf-label <label>.',
         file=sys.stderr,
     )
     sys.exit(1)
@@ -680,7 +688,8 @@ def parse_der_cert_chain(data: bytes) -> list[x509.Certificate]:
 def cmd_provision(args: argparse.Namespace) -> None:
     """Full provisioning: generate keys, fetch EEK, submit CSR, get certs."""
     seed = resolve_seed(
-        seed_hex=args.seed, hw_key_hex=args.hw_key
+        seed_hex=args.seed, hw_key_hex=args.hw_key,
+        kdf_label=getattr(args, 'kdf_label', None),
     )
     keys = DeviceKeys(seed)
     device_info = load_device_config(args.config)
@@ -760,7 +769,8 @@ def cmd_provision(args: argparse.Namespace) -> None:
 def cmd_keybox(args: argparse.Namespace) -> None:
     """Export attestation keys and certs as keybox.xml."""
     seed = resolve_seed(
-        seed_hex=args.seed, hw_key_hex=args.hw_key
+        seed_hex=args.seed, hw_key_hex=args.hw_key,
+        kdf_label=getattr(args, 'kdf_label', None),
     )
     keys = DeviceKeys(seed)
     device_info = load_device_config(args.config)
@@ -815,7 +825,8 @@ def cmd_keybox(args: argparse.Namespace) -> None:
 def cmd_info(args: argparse.Namespace) -> None:
     """Show key and device information."""
     seed = resolve_seed(
-        seed_hex=args.seed, hw_key_hex=args.hw_key
+        seed_hex=args.seed, hw_key_hex=args.hw_key,
+        kdf_label=getattr(args, 'kdf_label', None),
     )
     keys = DeviceKeys(seed)
     device_info = load_device_config(args.config)
@@ -832,11 +843,12 @@ def cmd_info(args: argparse.Namespace) -> None:
           f'vendor={device_info.get("vendor_patch_level")}')
 
     if args.hw_key:
-        print(f'\nHardware KDF simulation:')
-        kdf = HardwareKdf(bytes.fromhex(args.hw_key))
-        for label in [b'rkp_bcc_km', b'keymaster1']:
-            out = kdf.derive(label, 32)
-            print(f'  KDF("{label.decode()}"): {out.hex()}')
+        label = getattr(args, 'kdf_label', None)
+        if label:
+            print(f'\nHardware KDF simulation:')
+            kdf = HardwareKdf(bytes.fromhex(args.hw_key))
+            out = kdf.derive(label.encode(), 32)
+            print(f'  KDF("{label}"): {out.hex()}')
 
 
 def cmd_verify(args: argparse.Namespace) -> None:
@@ -883,6 +895,10 @@ def _add_key_args(parser: argparse.ArgumentParser) -> None:
         help='16-byte hardware AES key (32 hex chars) for simulated KDF.',
     )
     parser.add_argument(
+        '--kdf-label', type=str, metavar='LABEL',
+        help='KDF label string (required with --hw-key).',
+    )
+    parser.add_argument(
         '--config', type=str, metavar='FILE',
         help='Device configuration file (INI format). '
              'See template.conf for format.',
@@ -897,7 +913,7 @@ def main() -> None:
             examples:
               %(prog)s info --seed <hex> --config device_prop.conf
               %(prog)s provision --seed <hex> --config device_prop.conf
-              %(prog)s provision --hw-key <hex> --config device_prop.conf
+              %(prog)s provision --hw-key <hex> --kdf-label rkp_bcc_km --config device_prop.conf
               %(prog)s keybox --seed <hex> --config device_prop.conf -o keybox.xml
               %(prog)s verify csr_output.cbor
 

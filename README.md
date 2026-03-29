@@ -87,7 +87,7 @@ See `template.conf` for all supported fields. Private config files
 
 ```
 python3 rkp_sw.py info --seed <64-hex> --config device_prop.conf
-python3 rkp_sw.py info --hw-key <32-hex> --config device_prop.conf
+python3 rkp_sw.py info --hw-key <32-hex> --kdf-label rkp_bcc_km --config device_prop.conf
 ```
 
 ### Provision attestation keys
@@ -96,7 +96,7 @@ Generate EC P-256 keypairs, build a CSR, and submit to Google's RKP server:
 
 ```
 python3 rkp_sw.py provision --seed <64-hex> --config device_prop.conf
-python3 rkp_sw.py provision --hw-key <32-hex> --config device_prop.conf -n 2
+python3 rkp_sw.py provision --hw-key <32-hex> --kdf-label rkp_bcc_km --config device_prop.conf -n 2
 ```
 
 ### Export keybox.xml
