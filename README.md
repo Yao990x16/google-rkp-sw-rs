@@ -1,157 +1,114 @@
-# Android Remote Key Provisioning (Software)
+# Android Remote Key Provisioning (Rust)
 
-Software implementation of the Android RKP protocol that generates
-`AuthenticatedRequest` CSRs, communicates with Google's production RKP server,
-and exports `keybox.xml` for key attestation.
+中文文档：[`README.zh-CN.md`](README.zh-CN.md)
 
-## Overview
+Rust implementation of Android Remote Key Provisioning (RKP).
 
-Android devices with KeyMint 2.0+ use [Remote Key Provisioning][rkp-spec] to
-obtain attestation certificates from Google. The on-device flow requires a
-Trusted Execution Environment (TEE) to derive cryptographic keys and sign
-provisioning requests.
+This tool builds `AuthenticatedRequest` CSRs, talks to Google's production RKP
+server (`fetchEekChain` / `signCertificates`), and exports `keybox.xml`.
 
-This tool replicates that flow entirely in software, given a device's
-CDI_Leaf seed (Ed25519 private key material) or a hardware-derived AES key.
+## Source Repository
 
-[rkp-spec]: https://source.android.com/docs/core/ota/modular-system/remote-key-provisioning
+- This repository is a Rust rewrite/fork.
+- Upstream (original Python implementation): https://github.com/MhmRdd/google-rkp-sw
 
-## Architecture
+## What Changed vs Python Version
 
-```
-                        +-----------+
-                        | RKP Server|  (Google production)
-                        +-----+-----+
-                              |
-                 fetchEekChain / signCertificates
-                              |
-+-----------------------------+-----------------------------+
-|                        rkp_sw.py                          |
-|                                                           |
-|  CDI_Leaf Seed ─── Ed25519 Key ─── DICE Chain            |
-|       |                                 |                 |
-|       |           ECDH-ES + HKDF ─── AES-256-GCM         |
-|       |                |                                  |
-|       v                v                                  |
-|  COSE_Sign1     COSE_Encrypt0 (ProtectedData)            |
-|       |                |                                  |
-|       +-------+--------+                                  |
-|               |                                           |
-|     AuthenticatedRequest (CBOR)                           |
-+-----------------------------------------------------------+
-```
+1. Language/runtime
+- Rewritten from Python to Rust; distributed as a compiled binary.
 
-### Key Derivation
+2. CSR strictness
+- Rust version now enforces `generateCertificateRequestV2` structure checks:
+  - `AuthenticatedRequest = [1, UdsCerts, DiceCertChain, SignedData]`
+  - `CsrPayload = [3, "keymint", DeviceInfoV3, KeysToSign]`
+  - `challenge <= 64 bytes`
+  - strict `DeviceInfoV3` field/type/value validation
 
-The CDI_Leaf seed can be provided directly (`--seed`) or derived from a
-hardware AES key (`--hw-key`) using an AES-128-CMAC counter-mode KDF per
-[NIST SP 800-108][nist-kdf]:
+3. Behavior compatibility
+- CLI functionality is kept equivalent: `info`, `provision`, `keybox`, `verify`.
 
-```
-block_i = AES-CMAC(hw_key, BE32(i) || label)
-output  = block_1 || block_2 || ...  (truncated to requested length)
-```
-
-On real devices, the AES key resides in a SoC-internal key ladder and is
-not software-accessible. The `--hw-key` flag accepts the derived key for
-simulation and research purposes.
-
-[nist-kdf]: https://csrc.nist.gov/pubs/sp/800/108/r1/upd1/final
+4. Performance notes
+- Rust binary typically has lower runtime overhead than Python for local CBOR/
+  crypto processing.
+- End-to-end provisioning is still mostly network-bound (RKP API calls), so
+  overall wall-clock improvement may be limited without benchmarking.
 
 ## Requirements
 
-- Python 3.10+
-- [cbor2](https://pypi.org/project/cbor2/)
-- [cryptography](https://pypi.org/project/cryptography/) >= 41.0
+- Rust toolchain (Cargo)
+- OpenSSL-compatible environment for TLS (handled via `reqwest` + rustls in this project)
 
+Install Rust: https://www.rust-lang.org/tools/install
+
+## Build
+
+```bash
+cargo build --release
 ```
-pip install cbor2 cryptography
+
+Binary path:
+
+```bash
+./target/release/google-rkp-sw
 ```
 
 ## Configuration
 
-Copy `template.conf` to a private config file and fill in device-specific
-values:
+Copy `template.conf` to your private device config:
 
-```
+```bash
 cp template.conf device_prop.conf
 ```
 
-The config uses INI format with `[device]` and `[fingerprint]` sections.
-See `template.conf` for all supported fields. Private config files
-(`device_prop.conf`) are excluded from version control via `.gitignore`.
+Fill `[device]` and `[fingerprint]` with device-specific values.
 
 ## Usage
 
-### Show device and key information
+### Show device and key info
 
-```
-python3 rkp_sw.py info --seed <64-hex> --config device_prop.conf
-python3 rkp_sw.py info --hw-key <32-hex> --kdf-label rkp_bcc_km --config device_prop.conf
+```bash
+./target/release/google-rkp-sw info --seed <64-hex> --config device_prop.conf
+./target/release/google-rkp-sw info --hw-key <32-hex> --kdf-label rkp_bcc_km --config device_prop.conf
 ```
 
 ### Provision attestation keys
 
-Generate EC P-256 keypairs, build a CSR, and submit to Google's RKP server:
-
-```
-python3 rkp_sw.py provision --seed <64-hex> --config device_prop.conf
-python3 rkp_sw.py provision --hw-key <32-hex> --kdf-label rkp_bcc_km --config device_prop.conf -n 2
+```bash
+./target/release/google-rkp-sw provision --seed <64-hex> --config device_prop.conf
+./target/release/google-rkp-sw provision --hw-key <32-hex> --kdf-label rkp_bcc_km --config device_prop.conf -n 2
 ```
 
 ### Export keybox.xml
 
-Provision a key and export the result as an Android `keybox.xml`:
-
-```
-python3 rkp_sw.py keybox --seed <64-hex> --config device_prop.conf -o keybox.xml
+```bash
+./target/release/google-rkp-sw keybox --seed <64-hex> --config device_prop.conf -o keybox.xml
 ```
 
-### Verify a CSR
+### Verify CSR
 
+```bash
+./target/release/google-rkp-sw verify csr_output.cbor
 ```
-python3 rkp_sw.py verify csr_output.cbor
+
+### Development mode (without release build)
+
+```bash
+cargo run -- info --seed <64-hex> --config device_prop.conf
+cargo run -- provision --seed <64-hex> --config device_prop.conf
+cargo run -- keybox --seed <64-hex> --config device_prop.conf -o keybox.xml
+cargo run -- verify csr_output.cbor
 ```
 
-## Protocol
+## Protocol References
 
-The tool implements the full `generateCertificateRequestV2` protocol:
-
-1. **EEK fetch** &mdash; `POST :fetchEekChain` returns the server's Endpoint
-   Encryption Key chain and a challenge nonce.
-2. **CSR build** &mdash; Constructs an `AuthenticatedRequest` containing:
-   - `DeviceInfo` (CBOR map from config)
-   - `DiceCertChain` (Degenerate DICE: UDS = CDI_Leaf, self-signed)
-   - `ProtectedData` (COSE_Encrypt0 with ECDH-ES + AES-256-GCM)
-   - `SignedData` (COSE_Sign1 with Ed25519 over challenge + payload)
-3. **CSR submit** &mdash; `POST :signCertificates` returns X.509 certificate
-   chains signed by Google's attestation root.
-
-### References
-
-| Specification | Use |
-|---|---|
-| [RFC 9052][rfc9052] | COSE_Sign1, COSE_Encrypt0 structures |
-| [RFC 9053][rfc9053] | EdDSA, ECDH-ES, AES-256-GCM algorithm identifiers |
-| [RFC 8392][rfc8392] | CWT claims (issuer, subject) |
-| [NIST SP 800-108r1][nist-kdf] | AES-CMAC counter-mode KDF |
-| [Open DICE][dice] | DICE certificate chain profile |
-| [Android RKP AIDL][rkp-aidl] | AuthenticatedRequest CDDL schema |
-
-[rfc9052]: https://datatracker.ietf.org/doc/html/rfc9052
-[rfc9053]: https://datatracker.ietf.org/doc/html/rfc9053
-[rfc8392]: https://datatracker.ietf.org/doc/html/rfc8392
-[dice]: https://pigweed.googlesource.com/open-dice/+/refs/heads/main/docs/specification.md
-[rkp-aidl]: https://cs.android.com/android/platform/superproject/+/main:hardware/interfaces/security/rkp/aidl/
+- Android RKP overview: https://source.android.com/docs/core/ota/modular-system/remote-key-provisioning
+- Android RKP AIDL/CDDL: https://cs.android.com/android/platform/superproject/+/main:hardware/interfaces/security/rkp/aidl/
+- RFC 9052 (COSE): https://datatracker.ietf.org/doc/html/rfc9052
+- RFC 9053 (COSE Algorithms): https://datatracker.ietf.org/doc/html/rfc9053
+- RFC 8392 (CWT): https://datatracker.ietf.org/doc/html/rfc8392
+- Open DICE: https://pigweed.googlesource.com/open-dice/+/refs/heads/main/docs/specification.md
+- NIST SP 800-108r1: https://csrc.nist.gov/pubs/sp/800/108/r1/upd1/final
 
 ## License
 
-```
-Copyright 2025 mhmrdd <1@mhmrdd.me>
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-```
+Apache-2.0. See [LICENSE](LICENSE).
